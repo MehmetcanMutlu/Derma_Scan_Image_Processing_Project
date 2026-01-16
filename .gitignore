@@ -1,8 +1,24 @@
-.env
-venv/
+# Python & Sistem Gereksizleri
 __pycache__/
+*.py[cod]
 .DS_Store
-*.pt
+
+# Sanal Ortam (Çok Önemli)
+venv/
+.env
+
+# Veri Setleri 
+train/
+test/
+valid/
+data.yaml
+README.dataset.txt
+README.roboflow.txt
+# Roboflow bazen klasör ismiyle indirir, genel koruma:
+*yolov8*
+datasets/
+
+# Eğitim Çıktıları ve Modeller
 runs/
-dataset/
-roboflow.zip
+*.pt
+*.onnx
