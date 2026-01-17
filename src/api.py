@@ -1,65 +1,72 @@
 from fastapi import FastAPI, File, UploadFile
-from ultralytics import YOLO
 from PIL import Image
 import io
 import uvicorn
 import os
+import google.generativeai as genai
+from dotenv import load_dotenv
 
-app = FastAPI(title="DermaScan AI API", description="Cilt Analiz ve Sivilce Tespit API'si")
+# .env yükle
+load_dotenv()
 
-# Eğitilen modelin tam yolu
-# Klasör adının 'akne_modeli' olduğundan emin ol.
-MODEL_PATH = "runs/detect/akne_modeli/weights/best.pt"
+app = FastAPI(title="DermaScan AI (Demo Mode)", description="Gemini Vision Destekli Hızlı Analiz")
 
-# Model dosyasının varlığını kontrol edelim
-if not os.path.exists(MODEL_PATH):
-    print(f"UYARI: Model dosyası bulunamadı: {MODEL_PATH}")
-    print("Lütfen 'runs/detect/' klasörünü kontrol edip doğru yolu yaz.")
-    model = None
+# API Key Kontrol
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    print("❌ HATA: GEMINI_API_KEY bulunamadı!")
 else:
-    model = YOLO(MODEL_PATH)
-    print("✅ Model başarıyla yüklendi!")
+    genai.configure(api_key=api_key)
+    print("✅ Gemini Vision Modu Aktif! (YOLO devredışı)")
 
 @app.get("/")
 def home():
-    return {"message": "DermaScan AI Çalışıyor! /analyze endpointini kullanın."}
+    return {"message": "DermaScan Demo Modu Hazır! 🚀"}
 
 @app.post("/analyze")
 async def analyze_skin(file: UploadFile = File(...)):
-    if model is None:
-        return {"error": "Model yüklenemedi. Dosya yolunu kontrol edin."}
+    if not api_key:
+        return {"error": "API Key eksik, analiz yapılamıyor."}
 
-    # 1. Gelen resmi oku
+    # 1. Resmi Oku
     image_data = await file.read()
     image = Image.open(io.BytesIO(image_data))
     
-    # 2. Modele gönder (Tahmin)
-    # GÜNCELLEME: conf=0.10 yaptık (Hassasiyeti artırdık)
-    results = model.predict(image, conf=0.10)
-    
-    # 3. Sonuçları işle
-    result_list = []
-    # results bir liste döner, ilk eleman bizim resmimiz
-    for box in results[0].boxes:
-        # Sınıf ID'sini (0, 1, 2...) al
-        cls_id = int(box.cls[0])
-        # Sınıf ismini modelin isim listesinden çek (akne, siyah nokta vb.)
-        cls_name = model.names[cls_id]
-        
-        result_list.append({
-            "type": cls_name,
-            "confidence": round(float(box.conf[0]), 2), # % kaç emin?
-            "coordinates": box.xywh[0].tolist() # Koordinatlar
-        })
+    print(f"📸 Resim alındı: {file.filename}, Gemini'ye gönderiliyor...")
 
-    # 4. JSON Cevabı Dön
-    return {
-        "filename": file.filename,
-        "count": len(result_list),
-        "detections": result_list,
-        # Burası ileride Gemini/GPT ile dolacak, şimdilik statik
-        "advice": "Analiz tamamlandı. Detaylı cilt bakım tavsiyesi için LLM modülü bekleniyor."
-    }
+    # 2. Gemini'ye Gönderilecek Prompt (Hem teşhis hem tavsiye iste)
+    prompt = """
+    Sen uzman bir dermatologsun. Bu fotoğraftaki kişinin yüzünü analiz et.
+    
+    GÖREVLER:
+    1. Ciltteki problemleri tespit et (Akne, sivilce, kızarıklık, siyah nokta vb. var mı?).
+    2. Bunların tahmini sayısını veya yoğunluğunu belirt.
+    3. Bu duruma uygun, marka vermeden "içerik odaklı" 3 maddelik kısa bir tavsiye ver.
+    4. Çok kısa, profesyonel ama samimi bir dil kullan. Türkçe cevap ver.
+    
+    Çıktıyı JSON formatına benzer şekilde, başlıklarla ver.
+    """
+
+    try:
+        # Senin listendeki görsel destekli en iyi model:
+        # Eğer hata verirse 'models/gemini-1.5-flash' deneriz.
+        model = genai.GenerativeModel('models/gemini-2.5-flash-lite') 
+        
+        # Modele hem metni hem resmi veriyoruz
+        response = model.generate_content([prompt, image])
+        
+        ai_response = response.text
+        print("✅ Analiz Başarılı!")
+
+        return {
+            "filename": file.filename,
+            "demo_mode": True,
+            "ai_analysis": ai_response
+        }
+
+    except Exception as e:
+        print(f"❌ Hata: {str(e)}")
+        return {"error": f"Gemini analizi sırasında hata oluştu: {str(e)}"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
