@@ -1,72 +1,56 @@
 from fastapi import FastAPI, File, UploadFile
+from ultralytics import YOLO
 from PIL import Image
 import io
 import uvicorn
 import os
-import google.generativeai as genai
-from dotenv import load_dotenv
+from doctor import get_skin_advice 
 
-# .env yükle
-load_dotenv()
+app = FastAPI(title="DermaScan Microservice API")
 
-app = FastAPI(title="DermaScan AI (Demo Mode)", description="Gemini Vision Destekli Hızlı Analiz")
+# İndirdiğin modelin yolu (Yolu kontrol et!)
+MODEL_PATH = "runs/detect/akne_modeli/weights/best.pt"
 
-# API Key Kontrol
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    print("❌ HATA: GEMINI_API_KEY bulunamadı!")
+if os.path.exists(MODEL_PATH):
+    model = YOLO(MODEL_PATH)
+    print(f"✅ Microservice Hazır: Model ({MODEL_PATH}) yüklendi.")
 else:
-    genai.configure(api_key=api_key)
-    print("✅ Gemini Vision Modu Aktif! (YOLO devredışı)")
-
-@app.get("/")
-def home():
-    return {"message": "DermaScan Demo Modu Hazır! 🚀"}
+    print(f"❌ HATA: Model bulunamadı: {MODEL_PATH}")
+    model = None
 
 @app.post("/analyze")
 async def analyze_skin(file: UploadFile = File(...)):
-    if not api_key:
-        return {"error": "API Key eksik, analiz yapılamıyor."}
+    if model is None:
+        return {"error": "Model yüklenemedi, analiz yapılamıyor."}
 
     # 1. Resmi Oku
     image_data = await file.read()
     image = Image.open(io.BytesIO(image_data))
     
-    print(f"📸 Resim alındı: {file.filename}, Gemini'ye gönderiliyor...")
-
-    # 2. Gemini'ye Gönderilecek Prompt (Hem teşhis hem tavsiye iste)
-    prompt = """
-    Sen uzman bir dermatologsun. Bu fotoğraftaki kişinin yüzünü analiz et.
+    # 2. YOLO Analizi (Hassasiyet: %15)
+    results = model.predict(image, conf=0.15)
     
-    GÖREVLER:
-    1. Ciltteki problemleri tespit et (Akne, sivilce, kızarıklık, siyah nokta vb. var mı?).
-    2. Bunların tahmini sayısını veya yoğunluğunu belirt.
-    3. Bu duruma uygun, marka vermeden "içerik odaklı" 3 maddelik kısa bir tavsiye ver.
-    4. Çok kısa, profesyonel ama samimi bir dil kullan. Türkçe cevap ver.
-    
-    Çıktıyı JSON formatına benzer şekilde, başlıklarla ver.
-    """
-
-    try:
-        # Senin listendeki görsel destekli en iyi model:
-        # Eğer hata verirse 'models/gemini-1.5-flash' deneriz.
-        model = genai.GenerativeModel('models/gemini-2.5-flash-lite') 
+    # 3. Koordinatları ve Türleri Çıkar
+    detections = []
+    for box in results[0].boxes:
+        cord = box.xyxy[0].tolist() # [x1, y1, x2, y2] formatında koordinat
+        conf = round(float(box.conf[0]), 2)
+        cls_name = model.names[int(box.cls[0])]
         
-        # Modele hem metni hem resmi veriyoruz
-        response = model.generate_content([prompt, image])
-        
-        ai_response = response.text
-        print("✅ Analiz Başarılı!")
+        detections.append({
+            "type": cls_name,
+            "confidence": conf,
+            "bbox": cord # Kutu çizmek için bu lazım
+        })
 
-        return {
-            "filename": file.filename,
-            "demo_mode": True,
-            "ai_analysis": ai_response
-        }
+    # 4. Doktora Danış
+    advice = get_skin_advice(len(detections), detections)
 
-    except Exception as e:
-        print(f"❌ Hata: {str(e)}")
-        return {"error": f"Gemini analizi sırasında hata oluştu: {str(e)}"}
+    return {
+        "detection_count": len(detections),
+        "results": detections,
+        "doctor_advice": advice
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
